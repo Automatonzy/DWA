@@ -1,0 +1,75 @@
+# Go2-X5-lab
+# Ignore local caches, generated artifacts, logs, and development-side working notes.
+
+# OS / crash dumps
+.DS_Store
+Thumbs.db
+**/.thumbs
+**/*.dmp
+
+# Python cache / test cache
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/
+**/*.egg-info/
+.eggs/
+.coverage
+.coverage.*
+
+# IDE
+**/.idea/
+**/.vscode/
+!.vscode/
+!.vscode/**
+
+# Isaac Sim / packman
+_isaac_sim*/
+_repo/
+_build/
+.lastformat
+
+# Build / runtime outputs
+logs/
+runs/
+output/
+outputs/
+videos/
+recordings/
+results_csv/
+wandb/
+.neptune/
+docker/artifacts/
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*.swo
+
+# Local model / dataset caches
+modelscope/
+models/
+*.npz
+
+# Development / AI collaboration notes
+AGENT.md
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+COPILOT.md
+repair.md
+robot_lab.md
+train-p1.md
+train-p2.md
+train_route/
+docs/README.full-preserved.md
+**/.cursorrules
+**/.windsurfrules
+
+# Keep user-facing entry files visible
+!README.md
+!docs/
+!docs/imgs/
+!docs/imgs/**
