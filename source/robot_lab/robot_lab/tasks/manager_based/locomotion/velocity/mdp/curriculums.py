@@ -139,14 +139,12 @@ def reward_weights_curriculum(
         # Linear interpolation
         current_weight = p1_weight + (p2_weight - p1_weight) * progress
 
-        # Update the reward weight
+        # Update the reward weight through the public manager config API.
         if hasattr(env.reward_manager, "_term_names"):
             term_names = env.reward_manager._term_names
             if attr_name in term_names:
-                reward_term = env.reward_manager.get_term(attr_name)
-                if hasattr(reward_term, "cfg"):
-                    reward_term.cfg.weight = current_weight
-                elif hasattr(reward_term, "weight"):
-                    reward_term.weight = current_weight
+                reward_term_cfg = env.reward_manager.get_term_cfg(attr_name)
+                reward_term_cfg.weight = current_weight
+                env.reward_manager.set_term_cfg(attr_name, reward_term_cfg)
 
     return progress
