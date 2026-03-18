@@ -158,7 +158,7 @@ class _Go2X5LeggedBaseEnvCfg(LocomotionVelocityRoughEnvCfg):
         }
         self.events.randomize_rigid_body_mass_base.params["asset_cfg"].body_names = [self.base_link_name]
         self.events.randomize_rigid_body_mass_others.params["asset_cfg"].body_names = [
-            f"^(?!.*{self.base_link_name}).*"
+            f"^(?!{self.base_link_name}$).*"
         ]
         self.events.randomize_com_positions.params["asset_cfg"].body_names = [self.base_link_name]
         self.events.randomize_apply_external_force_torque.params["asset_cfg"].body_names = [self.base_link_name]
@@ -637,6 +637,17 @@ class Go2X5ArmWarmupRoughEnvCfg(Go2X5RobustRoughEnvCfg):
         self.commands.base_velocity.ranges.ang_vel_z = (-0.8, 0.8)
         self.commands.arm_joint_pos.position_range = ARM_ROUGH_WARMUP_RANGE
         self.commands.arm_joint_pos.resampling_time_range = (4.0, 6.0)
+
+        # Widen mass domain randomization for the first arm-enabled rough stage.
+        # This now includes arm_base_link as part of the non-base body set.
+        self.events.randomize_rigid_body_mass_base.params["mass_distribution_params"] = (0.85, 1.15)
+        self.events.randomize_rigid_body_mass_base.params["operation"] = "scale"
+        self.events.randomize_rigid_body_mass_others.params["mass_distribution_params"] = (0.90, 1.10)
+        self.events.randomize_com_positions.params["com_range"] = {
+            "x": (-0.03, 0.03),
+            "y": (-0.03, 0.03),
+            "z": (-0.03, 0.03),
+        }
 
         p2a_final_weights = dict(self._p2_reward_weights)
         p2b_target_weights = dict(p2a_final_weights)
