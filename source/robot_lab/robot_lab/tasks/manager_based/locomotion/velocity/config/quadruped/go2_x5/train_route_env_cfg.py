@@ -512,21 +512,27 @@ class Go2X5ArmUnlockFlatEnvCfg(Go2X5FoundationFlatEnvCfg):
             self.curriculum.arm_command_range = None
             self.commands.arm_joint_pos.position_range = ARM_FLAT_UNLOCK_FINAL_RANGE
 
-        self.rewards.is_terminated.weight = 0.0
-        self.rewards.joint_vel_l2.weight = 0.0
-        self.rewards.joint_vel_limits.weight = 0.0
-        self.rewards.joint_mirror.weight = 0.0
-        self.rewards.feet_contact.weight = 0.0
-        self.rewards.feet_stumble.weight = 0.0
-        self.rewards.feet_height.weight = 0.0
-        self.rewards.feet_height_body.weight = 0.0
+        for reward_name in (
+            "is_terminated",
+            "joint_vel_l2",
+            "joint_vel_limits",
+            "joint_mirror",
+            "feet_contact",
+            "feet_stumble",
+            "feet_height",
+            "feet_height_body",
+        ):
+            reward_term = getattr(self.rewards, reward_name, None)
+            if reward_term is not None:
+                reward_term.weight = 0.0
         self.rewards.base_height_l2.params["target_height"] = 0.33
         self.rewards.feet_air_time.params["threshold"] = 0.45
         self.rewards.upward.weight = 1.0
-        self.rewards.arm_stable_track_bonus.params["tracking_std"] = 0.20
-        self.rewards.arm_stable_track_bonus.params["tilt_std"] = 0.22
-        self.rewards.arm_stable_track_bonus.params["vel_z_std"] = 0.25
-        self.rewards.arm_stable_track_bonus.params["command_scale"] = 0.12
+        if self.rewards.arm_stable_track_bonus is not None:
+            self.rewards.arm_stable_track_bonus.params["tracking_std"] = 0.20
+            self.rewards.arm_stable_track_bonus.params["tilt_std"] = 0.22
+            self.rewards.arm_stable_track_bonus.params["vel_z_std"] = 0.25
+            self.rewards.arm_stable_track_bonus.params["command_scale"] = 0.12
 
         self.events.randomize_rigid_body_material.params["static_friction_range"] = (0.4, 1.25)
         self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = (0.35, 1.10)
