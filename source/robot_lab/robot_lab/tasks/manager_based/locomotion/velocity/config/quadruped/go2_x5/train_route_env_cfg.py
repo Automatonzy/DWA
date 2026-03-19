@@ -588,6 +588,107 @@ class Go2X5ArmUnlockFlatEnvCfg(Go2X5FoundationFlatEnvCfg):
 
 
 @configclass
+class Go2X5ArmLocomotionFlatEnvCfg(Go2X5ArmUnlockFlatEnvCfg):
+    reward_curriculum_iterations: int = 1000
+
+    def __post_init__(self):
+        super().__post_init__()
+
+        # P5: keep full-range arm control from P4, and re-introduce low-speed
+        # base motion on flat terrain with 30% standing and 70% locomotion samples.
+        self.scene.num_envs = 2048
+
+        self.commands.base_velocity.rel_standing_envs = 0.30
+        self.commands.base_velocity.resampling_time_range = (5.0, 7.0)
+        self.commands.base_velocity.ranges.lin_vel_x = (-0.15, 0.15)
+        self.commands.base_velocity.ranges.lin_vel_y = (-0.10, 0.10)
+        self.commands.base_velocity.ranges.ang_vel_z = (-0.18, 0.18)
+        self.commands.arm_joint_pos.position_range = ARM_FLAT_UNLOCK_FINAL_RANGE
+        self.commands.arm_joint_pos.resampling_time_range = (4.0, 6.0)
+
+        # P5 keeps a fixed 30/70 stand-vs-motion mixture and a fixed full-range
+        # arm command support. We do not expand command ranges through curriculum.
+        self.curriculum.command_levels_lin_vel = None
+        self.curriculum.command_levels_ang_vel = None
+        self.curriculum.arm_command_range = None
+
+        p4_final_weights = dict(self._p4_reward_weights)
+        p5_target_weights = dict(p4_final_weights)
+        p5_target_weights.update(
+            {
+                "track_lin_vel_xy_exp": 4.5,
+                "track_ang_vel_z_exp": 2.2,
+                "lin_vel_z_l2": -1.6,
+                "ang_vel_xy_l2": -0.10,
+                "flat_orientation_l2": -0.50,
+                "body_lin_acc_l2": -0.015,
+                "stand_still": -2.0,
+                "joint_pos_penalty": -0.9,
+                "feet_air_time": 0.08,
+                "feet_air_time_variance": -0.2,
+                "feet_contact_without_cmd": 0.2,
+                "feet_slide": -0.12,
+                "feet_gait": 0.20,
+                "arm_joint_pos_tracking_l2": -3.2,
+                "arm_action_rate_l2": -0.010,
+                "arm_motion_tilt_penalty": -0.30,
+                "arm_action_in_unstable_base": -0.10,
+            }
+        )
+
+        self._p1_reward_weights = p4_final_weights
+        self._p2_reward_weights = p5_target_weights
+
+        if self.reward_curriculum_enable and getattr(self.curriculum, "reward_weights", None) is not None:
+            self.curriculum.reward_weights.params["p1_weights"] = self._p1_reward_weights
+            self.curriculum.reward_weights.params["p2_weights"] = self._p2_reward_weights
+            self.curriculum.reward_weights.params["curriculum_iterations"] = self.reward_curriculum_iterations
+            for attr_name, p4_weight in self._p1_reward_weights.items():
+                reward_term = getattr(self.rewards, attr_name, None)
+                if reward_term is not None:
+                    reward_term.weight = p4_weight
+        else:
+            for attr_name, p5_weight in self._p2_reward_weights.items():
+                reward_term = getattr(self.rewards, attr_name, None)
+                if reward_term is not None:
+                    reward_term.weight = p5_weight
+
+        self.rewards.base_height_l2.params["target_height"] = 0.33
+        self.rewards.feet_air_time.params["threshold"] = 0.45
+        self.rewards.upward.weight = 1.0
+
+        # Keep randomization conservative so instability primarily reflects
+        # leg-arm coupling rather than external disturbances.
+        self.events.randomize_rigid_body_material.params["static_friction_range"] = (0.60, 1.05)
+        self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = (0.50, 0.95)
+        self.events.randomize_rigid_body_material.params["restitution_range"] = (0.0, 0.10)
+        self.events.randomize_rigid_body_mass_base.params["mass_distribution_params"] = (0.95, 1.05)
+        self.events.randomize_rigid_body_mass_base.params["operation"] = "scale"
+        self.events.randomize_rigid_body_mass_others.params["mass_distribution_params"] = (0.97, 1.04)
+        self.events.randomize_com_positions.params["com_range"] = {
+            "x": (-0.015, 0.015),
+            "y": (-0.015, 0.015),
+            "z": (-0.015, 0.015),
+        }
+        self.events.randomize_actuator_gains.mode = "interval"
+        self.events.randomize_actuator_gains.interval_range_s = (3.0, 5.0)
+        self.events.randomize_actuator_gains.params["stiffness_distribution_params"] = (0.93, 1.07)
+        self.events.randomize_actuator_gains.params["damping_distribution_params"] = (0.93, 1.07)
+        self.events.randomize_apply_external_force_torque = None
+        self.events.randomize_push_robot = None
+
+        self.observations.policy.base_ang_vel.noise = Unoise(n_min=-0.02, n_max=0.02)
+        self.observations.policy.projected_gravity.noise = Unoise(n_min=-0.025, n_max=0.025)
+
+        self.sim2sim_action_delay_range = (0, 1)
+        self.sim2sim_action_hold_prob = 0.03
+        self.sim2sim_action_noise_std = 0.004
+        self.sim2sim_obs_delay_steps = 0
+
+        self.disable_zero_weight_rewards()
+
+
+@configclass
 class Go2X5RobustRoughEnvCfg(_Go2X5LeggedBaseEnvCfg):
     # Reward weight curriculum settings
     reward_curriculum_iterations: int = 64  # Roughly ~2k PPO updates with the current env-step based schedule
