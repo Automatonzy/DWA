@@ -482,7 +482,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     arm_schedule = None
     arm_pose_set = None
     arm_pose_set_targets = None
-    default_arm_sequence = None
     arm_action_map = None
     base_cmd_term = None
     fixed_base_cmd = None
@@ -578,7 +577,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             device=base_cmd_term.device,
         ).repeat(base_cmd_term.num_envs, 1)
 
-    # default arm sequence: wait 2s, move to extreme pose in ~2s, then hold
+    # initialize arm_term and arm_action_map for default (no arm override) case
     if (
         env_cfg.commands.arm_joint_pos is not None
         and args_cli.arm_cmd_pose is None
@@ -588,41 +587,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     ):
         arm_term = env.unwrapped.command_manager._terms.get("arm_joint_pos", None)
         if arm_term is not None:
-            defaults = arm_term.asset.data.default_joint_pos[:, arm_term.joint_ids]
-            pose_set_raw = getattr(env_cfg, "arm_pose_set", None)
-            if pose_set_raw is None:
-                pose_set_raw = [
-                    [0.51, 2.13, 1.02, 0.09, 0.17, 0.17],
-                    [-0.51, 2.13, 1.02, 0.09, 0.17, 0.17],
-                    [0.77, 1.36, 1.36, -0.09, 0.0, 1.02],
-                    [1.53, 2.21, 2.55, -0.09, 0.0, 0.09],
-                    [0.0, 2.21, 2.21, -0.09, -0.09, 0.09],
-                ]
-            pose_set = torch.tensor(pose_set_raw, device=defaults.device)
-            if pose_set.ndim != 2 or pose_set.shape[1] != len(arm_term.joint_ids):
-                raise ValueError(
-                    "arm_pose_set must be a list of poses with length equal to arm joint count."
-                )
-            # repeat each pose across 4 envs
-            pose_set = pose_set.repeat_interleave(4, dim=0)
-            env_ids = torch.arange(defaults.shape[0], device=defaults.device)
-            pose_indices = env_ids % pose_set.shape[0]
-            targets = pose_set[pose_indices]
-            if arm_term.cfg.clip_to_joint_limits:
-                limits = arm_term.asset.data.soft_joint_pos_limits[:, arm_term.joint_ids, :]
-                min_pos = limits[..., 0]
-                max_pos = limits[..., 1]
-                targets = torch.max(torch.min(targets, max_pos), min_pos)
-            warmup_steps = max(0, int(4.0 / dt))
-            move_steps = max(1, int(4.0 / dt))
-            hold_steps = max(1, int(2.0 / dt))
-            default_arm_sequence = {
-                "defaults": defaults,
-                "targets": targets,
-                "warmup_steps": warmup_steps,
-                "move_steps": move_steps,
-                "hold_steps": hold_steps,
-            }
             action_term = env.unwrapped.action_manager._terms.get("joint_pos", None)
             if action_term is not None:
                 name_to_index = {name: i for i, name in enumerate(action_term._joint_names)}
@@ -636,59 +600,29 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     }
                 else:
                     print("[WARN] Could not resolve all arm joints in action mapping.")
+
     # simulate environment
     try:
         while simulation_app.is_running():
             start_time = time.time()
             # run everything in inference mode
             with torch.inference_mode():
-                desired_arm_pos = None
-                desired_base_cmd = fixed_base_cmd
+                # keyboard overrides base_cmd
                 if args_cli.keyboard and controller is not None and base_cmd_term is not None:
                     desired_base_cmd = torch.tensor(
                         controller.advance(), dtype=torch.float32, device=base_cmd_term.device
                     ).unsqueeze(0).repeat(base_cmd_term.num_envs, 1)
-                if arm_schedule is not None:
-                    schedule = arm_schedule
-                    if timestep < schedule["warmup_steps"]:
-                        desired_arm_pos = schedule["defaults"]
-                    else:
-                        phase = (timestep - schedule["warmup_steps"]) % schedule["schedule_steps"]
-                        if phase == 0:
-                            schedule["current_offsets"] = schedule["target_offsets"].clone()
-                            schedule["target_offsets"] = schedule["sample_offsets"](
-                                schedule["cmd_range"], schedule["target_offsets"]
-                            )
-                        if phase < schedule["move_steps"]:
-                            alpha = phase / schedule["move_steps"]
-                            offsets = (1.0 - alpha) * schedule["current_offsets"] + alpha * schedule["target_offsets"]
-                        else:
-                            offsets = schedule["target_offsets"]
-                        target_pos = schedule["defaults"] + offsets
-                        if arm_term.cfg.clip_to_joint_limits:
-                            limits = arm_term.asset.data.soft_joint_pos_limits[:, arm_term.joint_ids, :]
-                            min_pos = limits[..., 0]
-                            max_pos = limits[..., 1]
-                            target_pos = torch.max(torch.min(target_pos, max_pos), min_pos)
-                        desired_arm_pos = target_pos
-                if default_arm_sequence is not None:
-                    seq = default_arm_sequence
-                    if timestep < seq["warmup_steps"]:
-                        desired_arm_pos = seq["defaults"]
-                    elif timestep < seq["warmup_steps"] + seq["move_steps"]:
-                        alpha = (timestep - seq["warmup_steps"]) / seq["move_steps"]
-                        target_pos = seq["defaults"] + alpha * (seq["targets"] - seq["defaults"])
-                        desired_arm_pos = target_pos
-                    else:
-                        desired_arm_pos = seq["targets"]
-                if arm_pose_set_targets is not None:
-                    desired_arm_pos = arm_pose_set_targets
-                if arm_term is not None and arm_pose is not None:
-                    if arm_pose_alt is not None and arm_pose_steps is not None:
-                        select_alt = (timestep // arm_pose_steps) % 2 == 1
-                        desired_arm_pos = arm_pose_alt if select_alt else arm_pose
-                    else:
-                        desired_arm_pos = arm_pose
+                elif args_cli.base_cmd is not None:
+                    desired_base_cmd = fixed_base_cmd
+                else:
+                    desired_base_cmd = torch.zeros(1, 3, dtype=torch.float32, device=base_cmd_term.device) if base_cmd_term is not None else None
+
+                # arm always at (0,0,0,0,0,0) unless overridden via CLI
+                if arm_term is not None and arm_pose is None and arm_pose_alt is None and arm_schedule is None and arm_pose_set_targets is None:
+                    desired_arm_pos = torch.zeros(1, 6, dtype=torch.float32, device=arm_term.device)
+                else:
+                    desired_arm_pos = None
+
                 if desired_base_cmd is not None and base_cmd_term is not None:
                     base_cmd_term.vel_command_b[:] = desired_base_cmd
                     if hasattr(base_cmd_term, "is_heading_env"):
@@ -717,7 +651,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                         offset_arm = offset
                     raw_arm = (desired_arm_pos - offset_arm) / scale_arm
                     actions[:, idx] = raw_arm
-                # actions = torch.zeros_like(actions)
                 # env stepping
                 obs, _, _, _ = env.step(actions)
             timestep += 1

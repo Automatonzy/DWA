@@ -3,8 +3,10 @@
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import json
 import os
 import sys
+from pathlib import Path
 
 from isaaclab.app import AppLauncher
 
@@ -33,6 +35,40 @@ parser.add_argument(
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
 parser.add_argument("--keyboard", action="store_true", default=False, help="Whether to use keyboard.")
 parser.add_argument("--map", type=str, default=None, help="Dir of the map.")
+parser.add_argument(
+    "--disable-can",
+    action="store_true",
+    default=False,
+    help="Disable importing the can asset from the workspace.",
+)
+parser.add_argument(
+    "--can-usd",
+    type=str,
+    default=None,
+    help="Path to the can USD asset. Defaults to the first USD found under ./can.",
+)
+parser.add_argument(
+    "--can-pos",
+    type=float,
+    nargs=3,
+    default=None,
+    metavar=("X", "Y", "Z"),
+    help="World position for the can asset. Defaults to a point in front of the robot spawn.",
+)
+parser.add_argument(
+    "--can-rot",
+    type=float,
+    nargs=4,
+    default=(0.70710678, 0.70710678, 0.0, 0.0),
+    metavar=("W", "X", "Y", "Z"),
+    help="World quaternion for the can asset. Defaults to a +90 degree rotation about the x-axis.",
+)
+parser.add_argument(
+    "--can-scale",
+    type=float,
+    default=0.02,
+    help="Uniform scale applied to the can asset.",
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -59,8 +95,10 @@ import gymnasium as gym
 import time
 import torch
 
+import isaaclab.sim as sim_utils
 from rsl_rl.runners import DistillationRunner, OnPolicyRunner
 
+from isaaclab.assets import RigidObjectCfg
 from isaaclab.devices import Se2Keyboard, Se2KeyboardCfg
 from isaaclab.envs import (
     DirectMARLEnv,
@@ -86,6 +124,97 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 import robot_lab.tasks  # noqa: F401
 
 
+def _find_default_can_usd() -> str | None:
+    """Return the preferred can USD/USDa found under the workspace-local can directory."""
+    can_root = Path.cwd() / "can"
+    if not can_root.exists():
+        return None
+    physics_candidates = sorted(can_root.glob("**/*_physics.usda"))
+    if physics_candidates:
+        return str(physics_candidates[0])
+    usd_candidates = sorted(list(can_root.glob("**/*.usda")) + list(can_root.glob("**/*.usd")))
+    return str(usd_candidates[0]) if usd_candidates else None
+
+
+def _parse_can_metadata(can_usd_path: str) -> float | None:
+    """Infer can height from the sibling annotation file when available."""
+    usd_path = Path(can_usd_path)
+    asset_root = usd_path.parent.parent
+    annotation_path = asset_root / f"{asset_root.name}_annotation.json"
+    if not annotation_path.exists():
+        return None
+
+    try:
+        annotation = json.loads(annotation_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    height = None
+    dimensions = annotation.get("dimensions")
+    if isinstance(dimensions, str):
+        try:
+            dim_values = [float(item.strip()) for item in dimensions.split("*")]
+        except ValueError:
+            dim_values = []
+        if len(dim_values) == 3:
+            height = dim_values[2]
+
+    return height
+
+
+def _build_can_cfg() -> RigidObjectCfg | None:
+    """Construct a rigid can asset configuration when a can USD is available."""
+    if args_cli.disable_can:
+        return None
+
+    can_usd_path = args_cli.can_usd or _find_default_can_usd()
+    if can_usd_path is None:
+        return None
+
+    can_usd_path = Path(can_usd_path).expanduser().resolve()
+    if can_usd_path.suffix == ".usd":
+        physics_overlay_path = can_usd_path.with_name(f"{can_usd_path.stem}_physics.usda")
+        if physics_overlay_path.exists():
+            can_usd_path = physics_overlay_path
+
+    can_usd_path = str(can_usd_path)
+    if not os.path.exists(can_usd_path):
+        raise FileNotFoundError(f"Can USD asset not found: {can_usd_path}")
+
+    can_height = _parse_can_metadata(can_usd_path)
+    if args_cli.can_pos is not None:
+        can_pos = tuple(args_cli.can_pos)
+    else:
+        can_pos = (-1.975, 6.65, 0.71642)
+
+    print(f"[INFO] Loading can asset from: {can_usd_path}")
+    print(f"[INFO] Can spawn pose: pos={can_pos}, rot={tuple(args_cli.can_rot)}")
+
+    return RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/Can",
+        init_state=RigidObjectCfg.InitialStateCfg(pos=can_pos, rot=tuple(args_cli.can_rot)),
+        spawn=sim_utils.UsdFileCfg(
+            usd_path=can_usd_path,
+            scale=(args_cli.can_scale, args_cli.can_scale, args_cli.can_scale),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                rigid_body_enabled=True,
+                kinematic_enabled=False,
+                disable_gravity=False,
+                linear_damping=2.0,
+                angular_damping=4.0,
+                max_depenetration_velocity=0.5,
+                sleep_threshold=0.02,
+                stabilization_threshold=0.01,
+            ),
+            collision_props=sim_utils.CollisionPropertiesCfg(
+                collision_enabled=True,
+                contact_offset=0.005,
+                rest_offset=0.0,
+            ),
+        ),
+    )
+
+
 @hydra_task_config(args_cli.task, args_cli.agent)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlBaseRunnerCfg):
     """Play with RSL-RL agent."""
@@ -103,20 +232,23 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # cs map config
     env_cfg.scene.terrain = TerrainImporterCfg(
-        prim_path="/World/ground",
+        prim_path="/World/scene_collision",
         terrain_type="usd",
         usd_path=args_cli.map,
         debug_vis=False,
     )
     env_cfg.scene.sky_light = None
+    can_cfg = _build_can_cfg()
+    if can_cfg is not None:
+        env_cfg.scene.can = can_cfg
     env_cfg.events.randomize_reset_base.params = {
         "pose_range": {
-            "x": (15.0, 15.0),
-            "y": (10.0, 10.0),
+            "x": (-2.03488, -2.03488),
+            "y": (5.00164, 5.00164),
             "z": (0.0, 0.0),
             "roll": (0.0, 0.0),
             "pitch": (0.0, 0.0),
-            "yaw": (0.0, 0.0),
+            "yaw": (1.58, 1.58),
         },
         "velocity_range": {
             "x": (-0.5, 0.5),
@@ -255,18 +387,117 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # reset environment
     obs = env.get_observations()
     timestep = 0
+
+    # initialize command terms
+    arm_term = env.unwrapped.command_manager._terms.get("arm_joint_pos", None)
+    base_cmd_term = env.unwrapped.command_manager._terms.get("base_velocity", None)
+    robot = env.unwrapped.scene["robot"]
+    arm_home_pos = torch.zeros(1, 6, dtype=torch.float32, device=env.unwrapped.device) if arm_term is not None else None
+    gripper_open_pos = torch.tensor([[0.044, 0.044]], dtype=torch.float32, device=env.unwrapped.device)
+    gripper_closed_pos = torch.zeros(1, 2, dtype=torch.float32, device=env.unwrapped.device)
+    desired_gripper_pos = gripper_closed_pos.clone()
+    zero_velocity_start_time = None
+    arm_phase = "idle"
+    gripper_joint_ids, _ = robot.find_joints(["arm_joint7", "arm_joint8"], preserve_order=True)
+    if len(gripper_joint_ids) == 2:
+        print(f"[INFO] Direct gripper joint control enabled for joint ids: {gripper_joint_ids}")
+    else:
+        gripper_joint_ids = None
+        print("[WARN] Failed to resolve gripper joint ids for direct control.")
+
     # simulate environment
     while simulation_app.is_running():
         start_time = time.time()
         # run everything in inference mode
         with torch.inference_mode():
+            if base_cmd_term is not None:
+                if timestep * dt < 2:
+                    desired_base_cmd = torch.tensor([[0.5, 0.0, 0.0]], dtype=torch.float32, device=base_cmd_term.device)
+                else:
+                    desired_base_cmd = torch.zeros(1, 3, dtype=torch.float32, device=base_cmd_term.device)
+            else:
+                desired_base_cmd = None
+            desired_arm_pos = arm_home_pos.clone() if arm_home_pos is not None else None
+            desired_gripper_pos = gripper_closed_pos.clone()
+
+            sim_time = timestep * dt
+            if desired_base_cmd is not None and torch.linalg.norm(desired_base_cmd, dim=1).max().item() < 1.0e-6:
+                if zero_velocity_start_time is None:
+                    zero_velocity_start_time = sim_time
+                    print(f"[INFO] Base velocity reached zero at t={sim_time:.2f}s; arm command timer started.")
+                zero_velocity_elapsed = sim_time - zero_velocity_start_time
+                if zero_velocity_elapsed < 8.0:
+                    open_progress = min(max(zero_velocity_elapsed / 1.0, 0.0), 1.0)
+                    desired_gripper_pos = gripper_closed_pos + (gripper_open_pos - gripper_closed_pos) * open_progress
+                elif zero_velocity_elapsed < 9.0:
+                    close_progress = min(max((zero_velocity_elapsed - 8.0) / 1.0, 0.0), 1.0)
+                    desired_gripper_pos = gripper_open_pos + (gripper_closed_pos - gripper_open_pos) * close_progress
+                else:
+                    desired_gripper_pos = gripper_closed_pos.clone()
+                if zero_velocity_elapsed < 2.0:
+                    next_arm_phase = "hold_home"
+                elif zero_velocity_elapsed < 5.0:
+                    next_arm_phase = "move_to_target"
+                    if desired_arm_pos is not None:
+                        joint_progress = (zero_velocity_elapsed - 2.0) / 3.0
+                        smooth_progress = joint_progress * joint_progress * (3.0 - 2.0 * joint_progress)
+                        desired_arm_pos[:, 2] = 1.5 * smooth_progress
+                        desired_arm_pos[:, 1] = 1.55 * smooth_progress
+                elif zero_velocity_elapsed < 8.0:
+                    next_arm_phase = "hold_target"
+                    if desired_arm_pos is not None:
+                        desired_arm_pos[:, 2] = 1.5
+                        desired_arm_pos[:, 1] = 1.55
+                elif zero_velocity_elapsed < 10.0:
+                    next_arm_phase = "gripper_close_hold"
+                    if desired_arm_pos is not None:
+                        desired_arm_pos[:, 2] = 1.5
+                        desired_arm_pos[:, 1] = 1.55
+                elif zero_velocity_elapsed < 13.0:
+                    next_arm_phase = "return_stage_1"
+                    if desired_arm_pos is not None:
+                        joint_progress = (zero_velocity_elapsed - 10.0) / 3.0
+                        smooth_progress = joint_progress * joint_progress * (3.0 - 2.0 * joint_progress)
+                        desired_arm_pos[:, 2] = 1.5
+                        desired_arm_pos[:, 1] = 1.55 - 0.55 * smooth_progress
+                elif zero_velocity_elapsed < 16.0:
+                    next_arm_phase = "return_stage_2"
+                    if desired_arm_pos is not None:
+                        joint_progress = (zero_velocity_elapsed - 13.0) / 3.0
+                        smooth_progress = joint_progress * joint_progress * (3.0 - 2.0 * joint_progress)
+                        desired_arm_pos[:, 2] = 1.5 * (1.0 - smooth_progress)
+                        desired_arm_pos[:, 1] = 1.0 * (1.0 - smooth_progress)
+                else:
+                    next_arm_phase = "hold_reset"
+                    if desired_arm_pos is not None:
+                        desired_arm_pos.zero_()
+            else:
+                zero_velocity_start_time = None
+                next_arm_phase = "drive_base"
+
+            if next_arm_phase != arm_phase:
+                print(f"[INFO] Arm command phase -> {next_arm_phase} at t={sim_time:.2f}s")
+                arm_phase = next_arm_phase
+
+            if desired_base_cmd is not None and base_cmd_term is not None:
+                base_cmd_term.vel_command_b[:] = desired_base_cmd
+                if hasattr(base_cmd_term, "is_heading_env"):
+                    base_cmd_term.is_heading_env[:] = False
+                if hasattr(base_cmd_term, "is_standing_env"):
+                    base_cmd_term.is_standing_env[:] = torch.linalg.norm(desired_base_cmd, dim=1) < 1.0e-6
+                if hasattr(base_cmd_term, "heading_target"):
+                    base_cmd_term.heading_target[:] = 0.0
+            if desired_arm_pos is not None and arm_term is not None:
+                arm_term.command_buffer[:] = desired_arm_pos
+
             # agent stepping
             actions = policy(obs)
-            # actions = torch.zeros_like(actions)
             # env stepping
             obs, _, _, _ = env.step(actions)
-        if args_cli.video:
+            if desired_gripper_pos is not None and gripper_joint_ids is not None:
+                robot.set_joint_position_target(desired_gripper_pos, joint_ids=gripper_joint_ids)
             timestep += 1
+        if args_cli.video:
             # Exit the play loop after recording one video
             if timestep == args_cli.video_length:
                 break

@@ -1,0 +1,38 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+)
+
+def Xform "World" (
+    prepend references = @./0364ab96f338493c972248102b462aa4.usd@</World>
+)
+{
+    def Material "physicsMaterial" (
+        prepend apiSchemas = ["PhysicsMaterialAPI", "PhysxMaterialAPI"]
+    )
+    {
+        float physics:dynamicFriction = 2
+        float physics:restitution = 0
+        float physics:staticFriction = 2
+        uniform token physxMaterial:frictionCombineMode = "max"
+        uniform token physxMaterial:restitutionCombineMode = "min"
+    }
+
+    over "Object_0_023" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+    )
+    {
+        bool physics:kinematicEnabled = 0
+        float physics:mass = 0.001
+        bool physics:rigidBodyEnabled = 1
+
+        over "Object_0_023" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+        )
+        {
+            uniform token physics:approximation = "convexHull"
+            bool physics:collisionEnabled = 1
+            rel material:binding:physics = </World/physicsMaterial>
+        }
+    }
+}
