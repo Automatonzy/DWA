@@ -1,6 +1,6 @@
 # Go2-X5 Navigation Pipeline
 
-这个 README 只保留当前导航主链路的操作说明，目标是从一份 `usda` 场景入口文件开始，串起下面这条流程：
+这个仓库目标是从一份 `usda` 场景入口文件开始，串起下面这条流程：
 
 `USDA -> collision/visual 资产检查 -> 2D occupancy grid -> 起终点点选 -> A* 全局路径 -> DWA 局部控制 -> RL locomotion 执行 -> 轨迹日志`
 
@@ -354,35 +354,3 @@ episodes/
 - `--task-id` 固定本次采集属于哪个任务，默认为 `1`，不同任务类型可指定不同编号
 - `--dataset-dir` 不传时默认为 `<repo>/episodes/`
 - 每次运行会扫描 `<dataset-dir>/<task-id>/` 下已有的数字子目录，取 `max + 1` 作为新轨迹编号，保证不覆盖历史数据
-
-## 8. 当前系统状态
-
-当前已经打通的链路：
-
-- 从 `usda` 导出导航地图
-- 基于 occupancy grid 做 A*
-- 用 `pick_nav_points.py` 点选起终点
-- 在仿真里使用 `play_nav_cs.py` 进行 A* + DWA + RL locomotion 在线导航
-- 机器狗头顶 RGB 摄像头（`base` link 前方 28 cm、上方 7 cm，朝向正前方）
-- 按子任务结构（导航阶段 / yaw 对齐阶段）保存 episode：CSV 状态 + JPEG 图像，50 Hz
-
-当前仍在继续优化的部分：
-
-- DWA 的终点附近收敛
-- 任务成功判定阈值
-- 更稳定的终端接近策略
-- 批量任务调度与自动采集
-
-
-## 9. 推荐验证顺序
-
-从头串流程时，严格按下面顺序做：
-
-1. 先检查 `usda` 依赖资产是否存在
-2. 先跑 `play_cs.py`，确认场景和机器人正常
-3. 再导出 `nav map`
-4. 再用 `inspect_nav_map.py` / `pick_nav_points.py` 选点
-5. 再做离线 A*
-6. 最后才跑 `play_nav_cs.py`
-
-不要跳步骤。当前最容易浪费时间的情况，是场景资产没对齐时直接去调导航控制器。
